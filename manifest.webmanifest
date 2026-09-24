@@ -1,0 +1,17 @@
+{
+  "name": "Ordem em Campo",
+  "short_name": "Ordem em Campo",
+  "description": "Orçamentos, ordens de serviço, estoque, clientes e cobranças Pix pelo WhatsApp — funciona sem internet.",
+  "lang": "pt-BR",
+  "start_url": "./#/inicio",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#16382A",
+  "theme_color": "#16382A",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
