@@ -1,5 +1,5 @@
 /* Service worker do Ordem em Campo: guarda o app no aparelho para abrir sem internet. */
-const CACHE = 'ordem-em-campo-v1.0.1';
+const CACHE = 'ordem-em-campo-v1.0.3';
 const ARQUIVOS = ['./', './index.html', './app.js', './qrcode.min.js', './manifest.webmanifest',
   './icon-192.png', './icon-512.png', './icon-maskable-512.png', './apple-touch-icon.png',
   './favicon.ico', './favicon-32.png', './favicon-16.png'];
@@ -23,4 +23,16 @@ self.addEventListener('fetch', e => {
     if (hit) { e.waitUntil(net); return hit; }
     return (await net) || new Response('Sem conexão', { status: 503, headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
   }));
+});
+
+// Toque na notificação: foca o app já aberto (e navega até a OS) ou abre uma aba nova.
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  const osId = e.notification.data && e.notification.data.osId;
+  const hash = osId ? '#/os/' + osId : '#/agenda';
+  e.waitUntil((async () => {
+    const list = await clients.matchAll({ type: 'window', includeUncontrolled: true });
+    for (const c of list) { if ('focus' in c) { await c.focus(); c.postMessage({ type: 'nav', hash }); return; } }
+    await clients.openWindow(self.registration.scope + hash);
+  })());
 });

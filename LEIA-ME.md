@@ -1,4 +1,4 @@
-# Ordem em Campo — app para autônomos (versão 1.0)
+# Ordem em Campo — app para autônomos (versão 1.1)
 
 App que funciona no navegador do celular e **pode ser instalado na tela inicial**. Depois de aberto uma vez, funciona **sem internet**. Todos os dados ficam guardados no próprio aparelho.
 
@@ -13,6 +13,9 @@ App que funciona no navegador do celular e **pode ser instalado na tela inicial*
 - **Clientes**: cadastro (pode puxar dos contatos do Android), histórico de OS e orçamentos, quanto já pagou e quanto deve.
 - **Backup**: envia um arquivo para o Drive, WhatsApp ou e-mail, e restaura em outro celular.
 - Tema claro, escuro ou automático, com botões grandes e alto contraste.
+- **Agenda** (em *Mais › Agenda*): lista os atendimentos agendados agrupados por dia, com os atrasados em destaque. Tem dois jeitos de lembrar do horário:
+  - **Notificação no celular**: avisa na tela com o tempo de antecedência que você escolher (no horário, 15 min, 30 min, 1h, 2h ou 1 dia antes). Só funciona enquanto o app estiver aberto ou rodando em segundo plano no aparelho — se o app ficar fechado por muito tempo, o aviso não dispara, porque este é um app sem servidor.
+  - **Exportar para o Calendário do celular** (botão na Agenda, ou dentro de cada OS): gera um arquivo que abre no Google Agenda, Apple Calendário etc. Esse aviso vem do próprio sistema do celular e funciona **mesmo com o app fechado** — é a forma mais garantida de não perder um horário.
 
 ## Como publicar (grátis) para usar no celular
 

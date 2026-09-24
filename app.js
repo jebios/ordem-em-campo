@@ -38,6 +38,19 @@ function fmtWhen(s) { // data agendada em linguagem de campo
   const lbl = day === hoje ? 'Hoje' : day === addDays(hoje, 1) ? 'Amanhã' : day === addDays(hoje, -1) ? 'Ontem' : fmtDate(day).slice(0, 5);
   return t ? `${lbl}, ${t}` : lbl;
 }
+const cap = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+function dayLabel(d) {
+  const hoje = todayStr();
+  if (d === hoje) return 'Hoje';
+  if (d === addDays(hoje, 1)) return 'Amanhã';
+  if (d === addDays(hoje, -1)) return 'Ontem';
+  return cap(new Date(d + 'T00:00:00').toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: '2-digit' }));
+}
+function addMinutesISO(iso, min) { // soma minutos a um 'YYYY-MM-DDTHH:MM' local e devolve no mesmo formato
+  const d = new Date(iso); if (isNaN(d)) return iso;
+  d.setMinutes(d.getMinutes() + min);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
 const onlyDigits = s => String(s || '').replace(/\D/g, '');
 function fmtTel(t) {
   const d = onlyDigits(t).replace(/^55(?=\d{10,11}$)/, '');
@@ -80,7 +93,9 @@ const P = {
   contacts: '<rect x="4" y="3" width="16" height="18" rx="2"/><circle cx="12" cy="10" r="3"/><path d="M7.5 17a4.5 4.5 0 0 1 9 0"/>',
   swap: '<path d="M7 7h13l-4-4M17 17H4l4 4"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8v.01"/>',
-  install: '<rect x="7" y="2.5" width="10" height="19" rx="2"/><path d="M12 7v7M9 11l3 3 3-3"/>'
+  install: '<rect x="7" y="2.5" width="10" height="19" rx="2"/><path d="M12 7v7M9 11l3 3 3-3"/>',
+  calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M8 3v4M16 3v4M3.5 10h17"/>',
+  bell: '<path d="M6 9a6 6 0 0 1 12 0c0 4.5 1.6 5.8 2 6.2a.6.6 0 0 1-.4 1H4.4a.6.6 0 0 1-.4-1c.4-.4 2-1.7 2-6.2z"/><path d="M10 19a2 2 0 0 0 4 0"/>'
 };
 const icon = n => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${P[n] || ''}</svg>`;
 
@@ -125,7 +140,8 @@ const DEFAULT_CFG = {
   id: 'config', onboarded: false, nome: '', profissao: '', tel: '', doc: '', endereco: '', cidade: '',
   logo: '', pixTipo: 'cel', pixChave: '', pixNome: '', pixCidade: '',
   validadePadrao: 7, prazoCobranca: 0, rodape: 'Garantia de 90 dias sobre a mão de obra.',
-  tema: 'auto', lastBackup: '', seq: { orc: 0, os: 0, cob: 0 }
+  tema: 'auto', lastBackup: '', seq: { orc: 0, os: 0, cob: 0 },
+  notif: { ativo: false, antecedenciaMin: 30 }
 };
 const list = store => Object.values(S[store]);
 
@@ -137,6 +153,7 @@ async function loadAll() {
   }
   S.cfg = Object.assign({}, DEFAULT_CFG, S.meta.config || {});
   S.cfg.seq = Object.assign({ orc: 0, os: 0, cob: 0 }, S.cfg.seq || {});
+  S.cfg.notif = Object.assign({ ativo: false, antecedenciaMin: 30 }, S.cfg.notif || {});
   S.meta.config = S.cfg;
 }
 
@@ -231,6 +248,40 @@ function qrSVG(text) {
   catch (e) { console.error(e); return ''; }
 }
 const PIX_TIPOS = { cel: 'Celular', doc: 'CPF/CNPJ', email: 'E-mail', aleatoria: 'Chave aleatória' };
+
+/* ================= calendário do celular (.ics) ================= */
+// Complementa os lembretes do app: um evento no Calendário do sistema notifica mesmo com o app fechado.
+function icsEscape(s) { return String(s || '').replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\n/g, '\\n'); }
+function icsDate(iso) { const d = new Date(iso); if (isNaN(d)) return ''; return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}T${pad(d.getHours())}${pad(d.getMinutes())}00`; }
+function buildICS(events) {
+  const now = icsDate(nowISO());
+  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Ordem em Campo//PT-BR', 'CALSCALE:GREGORIAN'];
+  for (const e of events) {
+    lines.push('BEGIN:VEVENT', 'UID:' + e.id + '@ordememcampo.app', 'DTSTAMP:' + now,
+      'DTSTART:' + icsDate(e.start), 'DTEND:' + icsDate(e.end), 'SUMMARY:' + icsEscape(e.title));
+    if (e.desc) lines.push('DESCRIPTION:' + icsEscape(e.desc));
+    if (e.loc) lines.push('LOCATION:' + icsEscape(e.loc));
+    lines.push('BEGIN:VALARM', 'ACTION:DISPLAY', 'DESCRIPTION:' + icsEscape(e.title), 'TRIGGER:-PT15M', 'END:VALARM', 'END:VEVENT');
+  }
+  lines.push('END:VCALENDAR');
+  return lines.join('\r\n');
+}
+async function exportICS(events, filename) {
+  if (!events.length) { toast('Nada agendado para exportar'); return; }
+  const blob = new Blob([buildICS(events)], { type: 'text/calendar' });
+  if (navigator.canShare) {
+    const file = new File([blob], filename, { type: 'text/calendar' });
+    if (navigator.canShare({ files: [file] })) {
+      try { await navigator.share({ files: [file], title: 'Agenda' }); return; }
+      catch (e) { if (e.name === 'AbortError') return; }
+    }
+  }
+  const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+function osToEvent(o) {
+  return { id: o.id, start: o.agendadaPara, end: addMinutesISO(o.agendadaPara, 60), title: 'OS ' + numStr(o.numero) + ' · ' + nomeCli(o.clienteId), desc: o.descricao, loc: o.endereco };
+}
 
 /* ================= WhatsApp ================= */
 function waNumber(tel) { let d = onlyDigits(tel).replace(/^0+/, ''); if (d && d.length <= 11) d = '55' + d; return d; }
@@ -359,7 +410,7 @@ const TABS = [
   { id: 'cli', h: '#/clientes', l: 'Clientes', i: 'users' },
   { id: 'mais', h: '#/mais', l: 'Mais', i: 'more' }
 ];
-const UI = { orcF: 'todos', osF: 'abertas', cobF: 'abertas', estF: 'material', q: {} };
+const UI = { orcF: 'todos', osF: 'abertas', cobF: 'abertas', estF: 'material', agendaF: '7', q: {} };
 let CUR = null;           // documento em edição: {store, id}
 const NEW_IDS = new Set(); // documentos recém-criados (apagados se saírem vazios)
 let navDepth = 0, lastHash = '';
@@ -369,6 +420,7 @@ const ROUTES = [
   [/^#\/inicio$/, vInicio], [/^#\/orcamentos$/, vOrcList], [/^#\/orcamento\/([\w-]+)$/, vOrc],
   [/^#\/os$/, vOSList], [/^#\/os\/([\w-]+)$/, vOS], [/^#\/clientes$/, vCliList], [/^#\/cliente\/([\w-]+)$/, vCli],
   [/^#\/estoque$/, vEstoque], [/^#\/produto\/([\w-]+)$/, vProduto], [/^#\/cobrancas$/, vCobList], [/^#\/cobranca\/([\w-]+)$/, vCob],
+  [/^#\/agenda$/, vAgenda],
   [/^#\/mais$/, vMais], [/^#\/config$/, vConfig], [/^#\/backup$/, vBackup], [/^#\/doc\/(orc|os|cob)\/([\w-]+)$/, vDoc]
 ];
 
@@ -499,9 +551,12 @@ function vInicio() {
   const temDados = list('clientes').length + list('orcamentos').length + list('os').length > 0;
   const semBackup = temDados && (!c.lastBackup || (Date.now() - new Date(c.lastBackup)) > 7 * 864e5);
   const semPix = !c.pixChave;
+  const semLogo = temDados && !c.logo;
   return {
     title: 'Início', tab: 'inicio', html: `
-    <div class="row" style="margin:2px 2px 14px"><div class="grow">
+    <div class="row" style="margin:2px 2px 14px">
+      ${c.logo ? `<img src="${c.logo}" alt="Logo" style="width:52px;height:52px;border-radius:12px;object-fit:contain;background:#fff;border:1px solid var(--line);flex:none">` : ''}
+      <div class="grow">
       <div style="font-size:24px;font-weight:800;letter-spacing:-.02em">${saudacao()}${c.nome ? ', ' + esc(c.nome.split(' ')[0]) : ''}</div>
       <div class="muted">${esc(new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' }))}</div></div></div>
     <div class="big-actions">
@@ -515,11 +570,12 @@ function vInicio() {
       <a class="tile ${venc.length ? 'alert' : ''}" href="#/cobrancas"><span class="k">A receber</span><span class="n money" style="font-size:22px">${money(aReceber)}</span><span class="d" ${venc.length ? 'style="color:var(--crit);font-weight:700"' : ''}>${venc.length ? plural(venc.length, 'cobrança vencida', 'cobranças vencidas') : plural(cobAb.length, 'cobrança em aberto', 'cobranças em aberto')}</span></a>
       <a class="tile ${crit.length ? 'warn' : ''}" href="#/estoque"><span class="k">Estoque baixo</span><span class="n num">${crit.length}</span><span class="d">${crit.length ? esc(crit.slice(0, 2).map(p => p.nome).join(', ')) : 'tudo em ordem'}</span></a>
     </div>
-    ${semPix || semBackup ? '<div class="sec-title">Atenção</div><div class="stack">' : ''}
+    ${semPix || semLogo || semBackup ? '<div class="sec-title">Atenção</div><div class="stack">' : ''}
+    ${semLogo ? `<a class="banner info" href="#/config" style="text-decoration:none">${icon('camera')}<div><b>Coloque a logo da sua empresa</b><br>Ela aparece aqui no Início e no cabeçalho dos orçamentos e OS em PDF.</div></a>` : ''}
     ${semPix ? `<a class="banner info" href="#/config" style="text-decoration:none">${icon('pix')}<div><b>Cadastre sua chave Pix</b><br>Assim as cobranças já saem com o código Pix copia e cola.</div></a>` : ''}
     ${semBackup ? `<a class="banner warn" href="#/backup" style="text-decoration:none">${icon('alert')}<div><b>Faça uma cópia de segurança</b><br>Seus dados ficam só neste celular. ${c.lastBackup ? 'Último backup em ' + fmtDate(c.lastBackup) + '.' : 'Nenhum backup feito ainda.'}</div></a>` : ''}
-    ${semPix || semBackup ? '</div>' : ''}
-    <div class="sec-title">Próximos serviços <a href="#/os">Ver todos</a></div>
+    ${semPix || semLogo || semBackup ? '</div>' : ''}
+    <div class="sec-title">Próximos serviços <a href="#/agenda">Ver agenda</a></div>
     ${prox.length ? `<div class="list">${prox.map(osRow).join('')}</div>` : `<div class="card empty"><b>Agenda livre</b>Crie uma OS ou aprove um orçamento.</div>`}
     <div class="sec-title">Atalhos</div>
     <div class="btn-grid">
@@ -572,7 +628,7 @@ function newDoc(store, extra = {}) {
   const base = { id: uid(), criadoEm: nowISO(), clienteId: null };
   let o;
   if (store === 'orcamentos') o = { ...base, numero: nextNum('orc'), status: 'rascunho', itens: [], desconto: 0, validadeDias: Number(S.cfg.validadePadrao) || 7, obs: '', osId: null };
-  if (store === 'os') o = { ...base, numero: nextNum('os'), status: 'pendente', itens: [], desconto: 0, descricao: '', endereco: '', agendadaPara: '', laudo: '', fotos: { antes: [], depois: [] }, assinatura: '', assinadoPor: '', geo: null, estoqueBaixado: false, cobrancaId: null, orcamentoId: null };
+  if (store === 'os') o = { ...base, numero: nextNum('os'), status: 'pendente', itens: [], desconto: 0, descricao: '', endereco: '', agendadaPara: '', laudo: '', fotos: { antes: [], depois: [] }, assinatura: '', assinadoPor: '', geo: null, estoqueBaixado: false, cobrancaId: null, orcamentoId: null, notif: { lembrete: false, hora: false } };
   if (store === 'cobrancas') o = { ...base, numero: nextNum('cob'), status: 'aberta', valor: 0, vencimento: addDays(todayStr(), Number(S.cfg.prazoCobranca) || 0), descricao: '', osId: null, forma: '', pagaEm: '' };
   if (store === 'clientes') o = { id: uid(), criadoEm: nowISO(), nome: '', tel: '', email: '', doc: '', endereco: '', obs: '' };
   if (store === 'produtos') o = { id: uid(), criadoEm: nowISO(), tipo: 'material', nome: '', unidade: 'un', qtd: 0, minimo: 0, custo: 0, preco: 0 };
@@ -664,6 +720,7 @@ function vOS(id) {
       </div>
       ${o.geo ? `<span class="hint num">${o.geo.lat.toFixed(5)}, ${o.geo.lng.toFixed(5)} · precisão ${Math.round(o.geo.acc)} m · ${fmtDT(o.geo.em)}</span>` : ''}
       <label class="f">Problema relatado / o que fazer<textarea class="inp" data-f="descricao" placeholder="Ex.: disjuntor desarmando quando liga o chuveiro">${esc(o.descricao)}</textarea></label>
+      ${o.agendadaPara ? `<button class="btn sm" data-act="exportOSIcs" data-id="${o.id}">${icon('calendar')} Adicionar ao calendário do celular</button>` : ''}
     </div>
     ${itemsSection(o)}
     ${o.estoqueBaixado ? `<p class="hint">Materiais já baixados do estoque na conclusão. Itens incluídos depois não mexem no estoque.</p>` : ''}
@@ -881,6 +938,54 @@ function pixTestHTML() {
         <div class="stack" style="margin-top:10px"><div class="qr">${qrSVG(pix)}</div><p class="hint" style="margin:0">Leia com o app do seu banco. Se aparecer seu nome e R$ 1,00, está tudo certo (não precisa pagar).</p></div></details>`;
 }
 
+/* ================= AGENDA ================= */
+function agendaRow(o) {
+  const hora = o.agendadaPara.length > 10 ? o.agendadaPara.slice(11, 16) : '--:--';
+  return `<a class="li" href="#/os/${o.id}" data-nav><span class="agenda-time num">${esc(hora)}</span>
+    <div class="grow"><div class="t">${esc(nomeCli(o.clienteId))}</div>
+    <div class="s">${esc((o.descricao || o.itens[0]?.descricao || 'Sem descrição').split('\n')[0])}${o.endereco ? ' · ' + esc(o.endereco) : ''}</div></div>
+    ${pill(o.status, OS_ST)}</a>`;
+}
+function notifCard() {
+  const supported = 'Notification' in window;
+  const perm = supported ? Notification.permission : 'unsupported';
+  const cfg = S.cfg.notif;
+  return `<div class="card form">
+    <div class="row"><div class="grow"><div style="font-weight:700">Lembretes automáticos</div>
+      <div class="muted small">Avisa no celular no horário de cada serviço, enquanto o app estiver aberto ou instalado.</div></div>
+      ${supported && perm === 'granted' ? `<button class="chip ${cfg.ativo ? 'on' : ''}" data-act="toggleNotif" style="min-height:38px">${cfg.ativo ? 'Ativado' : 'Desativado'}</button>` : ''}</div>
+    ${!supported ? `<div class="banner warn">${icon('alert')}<div>Este navegador não aceita notificações. Use a exportação para o calendário abaixo — ela funciona sempre.</div></div>`
+      : perm === 'denied' ? `<div class="banner warn">${icon('alert')}<div>As notificações estão bloqueadas para este site. Ative em Configurações do navegador › Site › Notificações.</div></div>`
+      : perm === 'default' ? `<button class="btn" data-act="pedirNotif">${icon('bell')} Permitir notificações no navegador</button>`
+      : `<label class="f">Avisar com antecedência de<select class="inp" data-notifcfg="1">
+          ${[[0, 'No horário'], [15, '15 minutos antes'], [30, '30 minutos antes'], [60, '1 hora antes'], [120, '2 horas antes'], [1440, '1 dia antes']]
+            .map(([v, l]) => `<option value="${v}" ${Number(cfg.antecedenciaMin) === v ? 'selected' : ''}>${l}</option>`).join('')}
+        </select></label>`}
+  </div>`;
+}
+function vAgenda() {
+  const F = [['7', '7 dias'], ['30', '30 dias'], ['todos', 'Todos']];
+  const hoje = todayStr();
+  const aberto = o => !['concluida', 'cancelada'].includes(o.status);
+  const comData = list('os').filter(o => aberto(o) && o.agendadaPara);
+  const atrasados = comData.filter(o => o.agendadaPara.slice(0, 10) < hoje).sort((a, b) => a.agendadaPara.localeCompare(b.agendadaPara));
+  const limite = UI.agendaF === 'todos' ? null : addDays(hoje, Number(UI.agendaF));
+  const futuros = comData.filter(o => o.agendadaPara.slice(0, 10) >= hoje && (!limite || o.agendadaPara.slice(0, 10) <= limite)).sort((a, b) => a.agendadaPara.localeCompare(b.agendadaPara));
+  const groups = [];
+  for (const o of futuros) { const d = o.agendadaPara.slice(0, 10); let g = groups.find(x => x.d === d); if (!g) { g = { d, items: [] }; groups.push(g); } g.items.push(o); }
+  return {
+    title: 'Agenda', tab: 'mais', back: '#/mais', html: `<div class="stack">
+    ${notifCard()}
+    <button class="btn block" data-act="exportAgenda">${icon('calendar')} Exportar agenda para o Calendário do celular</button>
+    <p class="hint" style="margin:0">Abre no Google Agenda, Apple Calendário etc. Os avisos passam a vir do sistema — funcionam mesmo com o app fechado.</p>
+    ${chips(F, UI.agendaF, 'fAgenda')}
+    ${atrasados.length ? `<div class="sec-title" style="color:var(--crit)">Atrasados</div><div class="list">${atrasados.map(agendaRow).join('')}</div>` : ''}
+    ${groups.length ? groups.map(g => `<div class="sec-title">${esc(dayLabel(g.d))}</div><div class="list">${g.items.map(agendaRow).join('')}</div>`).join('')
+      : !atrasados.length ? `<div class="card empty"><b>Nada agendado</b>Defina data e hora numa OS para ela aparecer aqui.</div>` : ''}
+    </div>`
+  };
+}
+
 /* ================= MAIS / CONFIG / BACKUP ================= */
 let installPrompt = null;
 function vMais() {
@@ -889,6 +994,7 @@ function vMais() {
   return {
     title: 'Mais', tab: 'mais', html: `
     <div class="list">
+      ${li('#/agenda', 'calendar', 'Agenda', S.cfg.notif.ativo ? 'Lembretes ativados' : 'Próximos atendimentos e lembretes')}
       ${li('#/cobrancas', 'cash', 'Cobranças', 'Pix, vencimentos, recebidos', venc ? `<span class="pill p-crit">${venc} vencida${venc > 1 ? 's' : ''}</span>` : '')}
       ${li('#/estoque', 'box', 'Estoque e catálogo', 'Materiais, serviços e preços', crit ? `<span class="pill p-warn">${crit} repor</span>` : '')}
     </div>
@@ -913,7 +1019,7 @@ function vConfig() {
       <div class="row"><div style="width:84px;height:84px;border-radius:12px;border:2px dashed var(--line-strong);display:grid;place-items:center;overflow:hidden;flex:none;background:#fff">
         ${c.logo ? `<img src="${c.logo}" alt="Logo" style="width:100%;height:100%;object-fit:contain">` : '<span class="muted small">Logo</span>'}</div>
         <div class="stack grow" style="gap:8px"><label class="btn sm">${icon('camera')} ${c.logo ? 'Trocar logo' : 'Enviar logo'}<input type="file" accept="image/*" hidden data-logo="1"></label>
-        ${c.logo ? '<button class="btn sm ghost" data-act="rmLogo">Remover logo</button>' : ''}</div></div>
+        ${c.logo ? '<button class="btn sm ghost" data-act="rmLogo">Remover logo</button>' : '<span class="hint">Aparece no Início e no cabeçalho dos PDFs de orçamento, OS e cobrança.</span>'}</div></div>
       <label class="f">Nome ou empresa<input class="inp" data-f="nome" value="${esc(c.nome)}"></label>
       <label class="f">Profissão / especialidade<input class="inp" data-f="profissao" value="${esc(c.profissao)}" placeholder="Eletricista residencial e predial"></label>
       <div class="two"><label class="f">WhatsApp<input class="inp" data-f="tel" inputmode="tel" value="${esc(c.tel)}"></label>
@@ -1373,7 +1479,30 @@ const ACT = {
     for (const s of STORES) await DB.clear(s);
     fotoCache.clear(); await loadAll(); applyTheme(); location.replace('#/inicio'); render(); toast('Dados apagados');
   },
-  async install() { if (!installPrompt) return; installPrompt.prompt(); await installPrompt.userChoice.catch(() => { }); installPrompt = null; rerender(); }
+  async install() { if (!installPrompt) return; installPrompt.prompt(); await installPrompt.userChoice.catch(() => { }); installPrompt = null; rerender(); },
+  fAgenda(el) { UI.agendaF = el.dataset.v; rerender(); },
+  pedirNotif() {
+    if (!('Notification' in window)) { toast('Este navegador não aceita notificações'); return; }
+    Notification.requestPermission().then(perm => {
+      if (perm === 'granted') { S.cfg.notif.ativo = true; saveCfg(); toast('Notificações ativadas'); checkAgenda(); }
+      else toast('Permissão não concedida');
+      rerender();
+    });
+  },
+  toggleNotif() {
+    const c = S.cfg.notif;
+    if (!c.ativo && (!('Notification' in window) || Notification.permission !== 'granted')) { ACT.pedirNotif(); return; }
+    c.ativo = !c.ativo; saveCfg(); rerender();
+    if (c.ativo) checkAgenda();
+  },
+  exportAgenda() {
+    const evs = list('os').filter(o => !['concluida', 'cancelada'].includes(o.status) && o.agendadaPara).map(osToEvent);
+    exportICS(evs, 'agenda-ordem-em-campo.ics');
+  },
+  exportOSIcs(el) {
+    const o = S.os[el.dataset.id]; if (!o || !o.agendadaPara) { toast('Defina data e hora antes'); return; }
+    exportICS([osToEvent(o)], 'os-' + numStr(o.numero) + '.ics');
+  }
 };
 
 /* ================= eventos globais ================= */
@@ -1398,6 +1527,7 @@ document.addEventListener('input', e => {
     o[el.dataset.f] = v; touch();
     if (el.dataset.live) updateTotals();
     if (CUR.store === 'meta') { flush(); }
+    if (CUR.store === 'os' && el.dataset.f === 'agendadaPara') o.notif = { lembrete: false, hora: false };
     if (CUR.store === 'clientes' && el.dataset.f === 'nome') $('#title').textContent = v || 'Novo cliente';
     if (CUR.store === 'produtos' && el.dataset.f === 'nome') $('#title').textContent = v || 'Novo item';
   } else if (el.dataset.it !== undefined) {
@@ -1409,9 +1539,11 @@ document.addEventListener('input', e => {
 document.addEventListener('change', async e => {
   const el = e.target;
   if (el.dataset.rerender) { flush(); rerender(); return; }
+  if (el.dataset.notifcfg) { S.cfg.notif.antecedenciaMin = Number(el.value); saveCfg(); return; }
   // atualiza só o bloco do Pix, sem redesenhar a tela (não rouba o toque do próximo botão)
   if (el.dataset.f && CUR?.store === 'meta' && ['pixTipo', 'pixChave', 'pixNome', 'pixCidade', 'nome', 'cidade'].includes(el.dataset.f)) { flush(); const b = $('#pixTest'); if (b) b.innerHTML = pixTestHTML(); return; }
   if (el.dataset.f && CUR?.store === 'cobrancas' && el.dataset.f === 'valor') { flush(); const b = $('#pixCard'); if (b) b.innerHTML = pixCardHTML(curObj()); return; }
+  if (el.dataset.f && CUR?.store === 'os' && el.dataset.f === 'agendadaPara') { flush(); rerender(); return; }
   if (el.dataset.photo) {
     const o = curObj(); const files = Array.from(el.files || []); if (!files.length) return;
     toast(files.length > 1 ? `Salvando ${files.length} fotos…` : 'Salvando foto…', 1500);
@@ -1433,7 +1565,30 @@ document.addEventListener('focusout', e => {
 $('#backBtn').addEventListener('click', goBack);
 window.addEventListener('hashchange', () => render());
 window.addEventListener('pagehide', flush);
-document.addEventListener('visibilitychange', () => { if (document.hidden) flush(); });
+document.addEventListener('visibilitychange', () => { if (document.hidden) flush(); else checkAgenda(); });
+
+/* ================= lembretes / notificações da agenda ================= */
+async function fireNotif(o, atNow) {
+  const hora = o.agendadaPara.length > 10 ? o.agendadaPara.slice(11, 16) : '';
+  const title = (atNow ? 'Agora: ' : 'Em breve: ') + nomeCli(o.clienteId);
+  const body = (atNow ? `Serviço agendado para agora${hora ? ' (' + hora + ')' : ''}` : `Serviço às ${hora}`) + (o.endereco ? ' · ' + o.endereco : '');
+  const opts = { body, tag: 'os-' + o.id + (atNow ? '-hora' : '-lembrete'), icon: 'icon-192.png', badge: 'icon-192.png', vibrate: [200, 80, 200], data: { osId: o.id } };
+  try { if ('serviceWorker' in navigator) { const reg = await navigator.serviceWorker.ready; await reg.showNotification(title, opts); return; } }
+  catch (e) { console.warn(e); }
+  try { new Notification(title, opts); } catch (e) { console.warn(e); }
+}
+function checkAgenda() {
+  if (!S.cfg?.notif?.ativo || !('Notification' in window) || Notification.permission !== 'granted') return;
+  const now = Date.now(); const lead = Number(S.cfg.notif.antecedenciaMin) || 0;
+  for (const o of list('os')) {
+    if (['concluida', 'cancelada'].includes(o.status) || !o.agendadaPara) continue;
+    const t = new Date(o.agendadaPara).getTime(); if (!t) continue;
+    o.notif = o.notif || { lembrete: false, hora: false };
+    if (lead > 0 && !o.notif.lembrete && now >= t - lead * 60000 && now < t) { o.notif.lembrete = true; save('os', o, { silent: true }); fireNotif(o, false); }
+    if (!o.notif.hora && now >= t && now < t + 15 * 60000) { o.notif.hora = true; save('os', o, { silent: true }); fireNotif(o, true); }
+  }
+}
+navigator.serviceWorker?.addEventListener('message', e => { if (e.data?.type === 'nav' && e.data.hash) location.hash = e.data.hash; });
 function updateNet() { const on = navigator.onLine; const n = $('#net'); n.classList.toggle('off', !on); n.lastChild.textContent = on ? 'Online' : 'Offline'; n.title = on ? 'Conectado' : 'Sem internet: tudo continua funcionando e fica salvo no aparelho'; }
 window.addEventListener('online', updateNet); window.addEventListener('offline', updateNet);
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installPrompt = e; if (location.hash === '#/mais') rerender(); });
@@ -1482,6 +1637,8 @@ async function boot() {
   applyTheme();
   try { if (navigator.storage?.persist && !(await navigator.storage.persisted())) navigator.storage.persist(); } catch { }
   render();
+  checkAgenda();
+  setInterval(checkAgenda, 30000);
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     navigator.serviceWorker.register('sw.js').then(reg => {
       reg.addEventListener('updatefound', () => {
